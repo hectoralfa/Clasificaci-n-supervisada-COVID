@@ -1,0 +1,565 @@
+---
+output: pdf_document
+toc: true
+number_sections: true
+df_print: kable
+---
+\pagebreak
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, error = F)
+```
+
+# Manipulación de los datos
+
+Para el análisis que se llevará a cabo en este proyecto, además del preprocesamiento que se hizo en clase sobre las variables de ocupación, sector y resultado definitivo se imputarán los "SE IGNORA" de la mayoría de variables dicotómicas de manera aleatoria con probabilidad justa, además creamos la variable que mide los días transcurridos entre el inicio de síntomas y el ingreso al sistema.
+
+```{r, echo=F, message=FALSE, warning=FALSE, results='hide'}
+library(tidyr)
+library(ggplot2)
+library(rpart)
+library(rattle)
+library(ggridges)
+library(dplyr)
+library(forcats)
+library(gplots)
+library(caret)
+library(pROC)
+library(ggROC)
+library(e1071)
+library(nnet)
+library(randomForest)
+library(rpart)
+library(gridExtra)
+setwd("C:/Users/emman/Downloads/")
+
+datos<-read.csv("Ejemplo_analisis_grupo.csv",header=TRUE)
+
+sel1<-(datos$RESDEFIN=="NEGATIVO" |datos$RESDEFIN=="SARS-CoV-2")
+datos1<-datos[sel1==1,]
+
+library(dplyr)
+library(forcats)
+system.time(
+datos1 <- datos1 %>%
+  mutate(SECTOR = fct_recode(SECTOR,   "OTROS"  = "DIF",
+                                        "OTROS" = "ESTATAL",
+                                        "OTROS" = "MUNICIPAL",
+                                        "OTROS" = "UNIVERSITARIO",
+                                        "IMSS" = "IMSS-OPORTUNIDADES",
+                                        "ESPECIALES" = "PEMEX",
+                                        "ESPECIALES" = "SEDENA",
+                                        "ESPECIALES" = "SSA",
+                                        "ESPECIALES" = "SEMAR"
+                             ))
+)
+
+
+
+SECTOR <- ifelse(datos1$SECTOR == "DIF","OTROS",datos1$SECTOR)
+SECTOR <- ifelse(datos1$SECTOR == "ESTATAL","OTROS", datos1$SECTOR)
+SECTOR <- ifelse(datos1$SECTOR == "MUNICIPAL","OTROS", datos1$SECTOR)
+SECTOR <- ifelse(datos1$SECTOR == "UNIVERSITARIO","OTROS", datos1$SECTOR)
+
+datos1$OCUPACIO<-ifelse(datos1$OCUPACIO %in% c("DENTISTAS", "LABORATORISTAS", "ENFERMERAS",
+                                              "MEDICOS", "OTROS TRABAJADORES DE LA SALUD"), "SALUD", datos1$OCUPACIO)
+datos1$OCUPACIO<-ifelse(datos1$OCUPACIO %in% c("CHOFERES", "COMERCIANTES", "EMPLEADOS", "OBREROS"), "ACTIVOS", datos1$OCUPACIO)
+datos1$OCUPACIO<-ifelse(datos1$OCUPACIO %in% c("SALUD", "ACTIVOS"), datos1$OCUPACIO, "OTROS")
+# el modelo ÃÂ³ptimo con base al criterio de Akaike tiene las variables:
+#  SEXO + SECTOR + FIEBRE + 
+#  TOS + ODINOGIA + DISNEA + DIARREA + DOTORACI + CEFALEA + 
+#  MIALGIAS + ATAEDOGE + POLIPNEA + DOLABDO + INISUBIS + DISGEUSIA, 
+
+
+# VARIABLE EVOLUCI  (DEFUNCION; CASO GRAVE, CASO GRAVE TRANSLADO), (SEGUIMIENTO DOMICILIARIO, TRATAMIENTO ), (EL RESTO)
+# ELIMINANDO LOS 14 CASOS DE ALTA VOLUNTARIA
+
+DEF <- ifelse(datos1$FECDEF == "",0,1) 
+
+for (i in c(20:51,61)){
+  x<-datos1[,i]
+  s<-sum(x=="SI")
+  n<-sum(x=="NO")
+  si<-x[x=="SE IGNORA"]
+  y<-rbinom(length(si), 1, s/(s+n))
+  datos1[x=="SE IGNORA",i]<-ifelse(y==1, "SI", "NO")
+}
+datos1
+data1<-datos1[datos1$RESDEFIN!="",c(1:4,6,7,11:15,20:40, 61, 64)]
+data1$RESDEFIN<-ifelse(data1$RESDEFIN=="SARS-CoV-2", "POSITIVO", "NEGATIVO")
+for (i in c(1:2,4:7,9:34)){
+  data1[,i]<-factor(data1[,i])
+}
+data1$DIGCLINE<-factor(ifelse(data1$DIGCLINE=="SI", "SI", "NO"))
+data1$VACUNADO<-factor(ifelse(data1$VACUNADO=="SI", "SI", "NO"))
+df<-data1
+set.seed(1)
+flds<-createFolds(1:length(df$RESDEFIN), k=5, list = TRUE, returnTrain = F)
+stats<-c()
+b<-length(df$RESDEFIN)
+```
+
+# RESDEFIN
+
+##Descriptivo
+
+```{r out.width="75%"}
+Datos=df
+par(mfrow=c(2,2))
+p1<-table(Datos$RESDEFIN, Datos$ORIGEN); names(dimnames(p1))<-c("RESDEFIN","ORIGEN")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs ORIGEN")
+
+p1<-table(Datos$RESDEFIN, Datos$SECTOR); names(dimnames(p1))<-c("RESDEFIN","SECTOR")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs SECTOR")
+
+p1<-table(Datos$RESDEFIN, Datos$SEXO); names(dimnames(p1))<-c("RESDEFIN","SEXO")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs SEXO")
+
+p1<-table(Datos$RESDEFIN, Datos$TIPACIEN); names(dimnames(p1))<-c("RESDEFIN","TIPACIEN")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs TIPACIEN")
+
+
+p1<-table(Datos$RESDEFIN, Datos$DIGCLINE); names(dimnames(p1))<-c("RESDEFIN","DIGCLINE")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs DIGCLINE")
+
+p1<-table(Datos$RESDEFIN, Datos$OCUPACIO); names(dimnames(p1))<-c("RESDEFIN","OCUPACIO")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs OCUPACIO")
+
+p1<-table(Datos$RESDEFIN, Datos$FIEBRE); names(dimnames(p1))<-c("RESDEFIN","FIEBRE")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs FIEBRE")
+
+p1<-table(Datos$RESDEFIN, Datos$TOS); names(dimnames(p1))<-c("RESDEFIN","TOS")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs TOS")
+
+p1<-table(Datos$RESDEFIN, Datos$DISNEA); names(dimnames(p1))<-c("RESDEFIN","DISNEA")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs DISNEA")
+
+p1<-table(Datos$RESDEFIN, Datos$DOTORACI); names(dimnames(p1))<-c("RESDEFIN","DOTORACI")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs DOTORACI")
+
+p1<-table(Datos$RESDEFIN, Datos$CALOFRIOS); names(dimnames(p1))<-c("RESDEFIN","CALOFRIOS")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs CALOFRIOS")
+
+p1<-table(Datos$RESDEFIN, Datos$MIALGIAS); names(dimnames(p1))<-c("RESDEFIN","MIALGIAS")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs MIALGIAS")
+
+p1<-table(Datos$RESDEFIN, Datos$ARTRAL); names(dimnames(p1))<-c("RESDEFIN","ARTRAL")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs ARTRAL")
+
+p1<-table(Datos$RESDEFIN, Datos$ATAEDOGE); names(dimnames(p1))<-c("RESDEFIN","ATAEDOGE")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs ATAEDOGE")
+
+p1<-table(Datos$RESDEFIN, Datos$POLIPNEA); names(dimnames(p1))<-c("RESDEFIN","POLIPNEA")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs POLIPNEA")
+
+p1<-table(Datos$RESDEFIN, Datos$INISUBIS); names(dimnames(p1))<-c("RESDEFIN","INISUBIS")
+mosaicplot(p1, shade = T, main= "RESDEFIN vs INISUBIS")
+
+```
+
+## Positivos a Covid
+
+Al intentar explicar nuestra variable de Resultado definitivo utilizaremos las variables de origen, sector, cveentuni, entidad, sexo, tipo de paciente, edad, ocupación, si es o habla indígena, vacunación y todos los síntomas.
+
+Además eliminamos todos los registros donde nuestra variables de interés tenía datos faltantes.
+
+Primero explicaremos con los métodos de regresión logística y un árbol de  decisión, ya que estos nos pueden dar un nivel de importancia a las variables.
+
+El árbol resultante es el siguiente:
+
+
+
+```{r, echo=F, warning=FALSE, message=FALSE}
+###DOS GRUPOS
+#LOGISTICA
+k<-c()
+for(i in 5:5){
+  index<-(1:b)[-unlist(flds[i])]
+  modellog<-glm(RESDEFIN~., data=df[index,], family = "binomial")
+  p<-predict(modellog,newdata = df[-index,], type="response")
+  cm<-confusionMatrix(factor(ifelse(p>=0.5, "POSITIVO", "NEGATIVO")), df$RESDEFIN[-index])
+  k<-c(k,cm$overall[1])
+}
+stats<-c(stats,mean(k))
+#TREE
+k<-c()
+variables<-data.frame(colnames(df),0)
+for(i in 5:5){
+  index<-(1:b)[-unlist(flds[i])]
+  tree<-rpart(RESDEFIN~., data=df[index,])
+  p<-predict(tree, newdata = df[-index,], type="class")
+  k<-c(k,mean(p==df$RESDEFIN[-index]))
+}
+stats<-c(stats,mean(k))
+rpart.plot::rpart.plot(tree)
+
+```
+
+Consideraremos las seis variables más importantes para el árbol y aquellas en el  mejor modelo con el método de Akaike (*AIC*) para la regresión logística, luego usaremos la unión de estos dos conjuntos de variables importantes para hacer nuestra selección.
+
+Estas variables son:
+
+
+```{r, echo=F, warning=F, message=F, results='hide'}
+
+
+variables<-unique(c(names(tree$variable.importance)[1:6],names(modellog$xlevels)))
+
+df<-df[,c('RESDEFIN',variables)]
+```
+
+```{r, echo=F}
+print(variables)
+```
+
+Así con nuestras variables reducidas y haciendo $5$- Folds probaremos los  métodos de regresiÃ³n logística, máquinas de soporte vectorial, bosques aleatorios y el clasificador bayesiano ingenuo cuyos resultados se mostrarán posteriormente, pero se puede observar la curva ROC de sensibiliad/especificidad con el método de regresión logística
+
+```{r, echo=F, warning=F, message=F, results='hide'}
+###DOS GRUPOS
+#LOGISTICA
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  modellog<-glm(RESDEFIN~., data=df[index,], family = "binomial")
+  p<-predict(modellog,newdata = df[-index,], type="response")
+  cm<-confusionMatrix(factor(ifelse(p>=0.5, "POSITIVO", "NEGATIVO")), df$RESDEFIN[-index])
+  k<-c(k,cm$overall[1])
+}
+```
+
+```{r, echo=F, warning=F, message=F}
+roc(predictor=p, response=df$RESDEFIN[-index], plot=TRUE, print.auc=TRUE, col="blue")
+```
+
+```{r, echo=F, warning=F, message=F, results='hide'}
+tablogresdef<-cm$table
+stats<-c(stats,mean(k))
+#SVM
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  if(i==1){
+  sv<-train(RESDEFIN~., data=df[index,], method="svmLinear",
+            trControl = trainControl("cv", number = 4),
+            tuneGrid = expand.grid(C = seq(0.1, 2, length = 10)),
+            preProcess = c("center","scale"), tuneLength=3)
+  }
+  p<-predict(sv, df[-index,])
+  k<-c(k,mean(p==df$RESDEFIN[-index]))
+  
+}
+cm<-confusionMatrix(p, df$RESDEFIN[-index])
+stats<-c(stats,mean(k))
+
+##RANDOM FOREST
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  rf <- randomForest(RESDEFIN~., data=df[index,], ntree=700)
+
+k<-c(k,1-rf$err.rate[700,1])
+}
+stats<-c(stats,mean(k))
+#NB
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  nb <- naiveBayes(RESDEFIN~., data=df[index,])
+  p<-predict(nb, df[-index,])
+  k<-c(k,mean(p==df$RESDEFIN[-index]))
+  
+}
+stats<-c(stats,mean(k))
+stats1<-stats
+```
+
+# Evolución
+
+Por otro lado, también trataremos de explicar la variable evolución, la cual la   dividiremos en $2$ y $3$ categorías, **GRAVE** y **NO GRAVE**, y **GRAVE, MODERADO** y **NO GRAVE** respectivamente.
+
+Las variables explicativas son las mismas que para el caso anterior además de las comorbilidades
+Al usar sólo dos categorías haremos los mismo que con la variable **RESDEFIN**, primero usar regresión logística y un árbol, seleccionar variables y posteriormente usar los cuatro métodos.
+
+
+```{r, echo=F, message=F, warning=F, results='hide'}
+### PARA MODELAR EVOLUCION
+datos1$EVOLUCI<- ifelse(datos1$EVOLUCI %in% c("DEFUNCION", "CASO GRAVE -",
+                                                "CASO GRAVE - TRASLADO"),"GRAVE", datos1$EVOLUCI)
+datos1$EVOLUCI<- ifelse(datos1$EVOLUCI %in% c("EN TRATAMIENTO", "REFERENCIA"),"MODERADO", datos1$EVOLUCI)
+datos1$EVOLUCI<- ifelse(datos1$EVOLUCI %in% c("SEGUIMIENTO TERMINADO", "CASO NO GRAVE",
+                                                    "ALTA - VOLUNTARIA", "ALTA - TRASLADO",
+                                                    "SEGUIMIENTO DOMICILIARIO", "ALTA - MEJORIA", "ALTA - CURACION"), "NO GRAVE", datos1$EVOLUCI)
+datos1$DIAS<-as.Date(datos1$FECINGRE, format = '%d/%m/%Y')-as.Date(datos1$FECINISI, format = '%d/%m/%Y')
+
+data2<-datos1[,c(1:4, 6:8, 11:12,15, 20:51, 61,69 )]
+
+
+for (i in c(1:2,4:8,10:43)){
+  data2[,i]<-factor(data2[,i])
+}
+data2$DIGCLINE<-factor(ifelse(data2$DIGCLINE=="SI", "SI", "NO"))
+data2$VACUNADO<-factor(ifelse(data2$VACUNADO=="SI", "SI", "NO"))
+data2$DIAS<-as.numeric(data2$DIAS)
+df<-data2
+set.seed(1)
+flds<-createFolds(1:length(df$EVOLUCI), k=5, list = TRUE, returnTrain = F)
+stats<-c()
+b<-length(df$EVOLUCI)
+
+
+
+```
+
+## Descriptivo
+
+```{r out.width="75%"}
+
+Datos=df
+par(mfrow=c(2,2))
+p1<-table(Datos$EVOLUCI, Datos$ORIGEN); names(dimnames(p1))<-c("EVOLUCI","ORIGEN")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs ORIGEN")
+
+p1<-table(Datos$EVOLUCI, Datos$SECTOR); names(dimnames(p1))<-c("RESDEFIN","SECTOR")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs SECTOR")
+
+p1<-table(Datos$EVOLUCI, Datos$SEXO); names(dimnames(p1))<-c("EVOLUCI","SEXO")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs SEXO")
+
+p1<-table(Datos$EVOLUCI, Datos$TIPACIEN); names(dimnames(p1))<-c("EVOLUCI","TIPACIEN")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs TIPACIEN")
+
+p1<-table(Datos$EVOLUCI, Datos$DIGCLINE); names(dimnames(p1))<-c("EVOLUCI","DIGCLINE")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs DIGCLINE")
+
+p1<-table(Datos$EVOLUCI, Datos$OCUPACIO); names(dimnames(p1))<-c("EVOLUCI","OCUPACIO")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs OCUPACIO")
+
+p1<-table(Datos$EVOLUCI, Datos$FIEBRE); names(dimnames(p1))<-c("EVOLUCI","FIEBRE")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs FIEBRE")
+
+p1<-table(Datos$EVOLUCI, Datos$TOS); names(dimnames(p1))<-c("EVOLUCI","TOS")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs TOS")
+
+p1<-table(Datos$EVOLUCI, Datos$DISNEA); names(dimnames(p1))<-c("EVOLUCI","DISNEA")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs DISNEA")
+
+p1<-table(Datos$EVOLUCI, Datos$CEFALEA); names(dimnames(p1))<-c("EVOLUCI","CEFALEA")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs CEFALEA")
+
+p1<-table(Datos$EVOLUCI, Datos$MIALGIAS); names(dimnames(p1))<-c("EVOLUCI","MIALGIAS")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs MIALGIAS")
+
+p1<-table(Datos$EVOLUCI, Datos$ATAEDOGE); names(dimnames(p1))<-c("EVOLUCI","ATAEDOGE")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs ATAEDOGE")
+
+p1<-table(Datos$EVOLUCI, Datos$POLIPNEA); names(dimnames(p1))<-c("EVOLUCI","POLIPNEA")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs POLIPNEA")
+
+p1<-table(Datos$EVOLUCI, Datos$INISUBIS); names(dimnames(p1))<-c("EVOLUCI","INISUBIS")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs INISUBIS")
+
+p1<-table(Datos$EVOLUCI, Datos$DIABETES); names(dimnames(p1))<-c("EVOLUCI","DIABETES")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs DIABETES")
+
+p1<-table(Datos$EVOLUCI, Datos$HIPERTEN); names(dimnames(p1))<-c("EVOLUCI","HIPERTEN")
+mosaicplot(p1, shade = T, main= "EVOLUCI vs HIPERTEN")
+
+
+
+```
+
+##Metodología
+
+```{r}
+#DOS
+df$EVOLUCI<-factor(ifelse(df$EVOLUCI=="GRAVE", "GRAVE", "NO GRAVE"))
+stats<-c()
+
+#LOGISTICA
+k<-c()
+for(i in 5:5){
+  index<-(1:b)[-unlist(flds[i])]
+  modellog<-glm(EVOLUCI~., data=df[index,], family = "binomial")
+  summary(modellog)
+  p<-predict(modellog,newdata = df[-index,], type="response")
+  cm<-confusionMatrix(factor(ifelse(p>=0.5, "NO GRAVE", "GRAVE")), df$EVOLUCI[-index])
+  k<-c(k,cm$overall[1])
+} 
+stats<-c(stats,mean(k))
+#TREE
+k<-c()
+for(i in 5:5){
+  index<-(1:b)[-unlist(flds[i])]
+  tree<-rpart(EVOLUCI~., data=df[index,])
+  p<-predict(tree, newdata = df[-index,], type="class")
+  k<-c(k,mean(p==df$EVOLUCI[-index]))
+  rpart.plot::rpart.plot(tree)
+}
+stats<-c(stats,mean(k))
+
+modellog<-step(modellog, k=2, trace = FALSE)
+variables<-unique(c(names(tree$variable.importance)[1:6],names(modellog$xlevels)))
+```
+
+Las variables seleccionadas son:
+
+
+```{r, echo=F}
+print(variables)
+```
+```{r, echo=F, message=F, warning=F, results='hide'}
+#DOS CON SELECCION DE VARIABLES
+df<-df[,c("EVOLUCI",variables)]
+#LOGISTICA
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  modellog<-glm(EVOLUCI~., data=df[index,], family = "binomial")
+  summary(modellog)
+  p<-predict(modellog,newdata = df[-index,], type="response")
+  cm<-confusionMatrix(factor(ifelse(p>=0.5, "NO GRAVE", "GRAVE")), df$EVOLUCI[-index])
+  k<-c(k,cm$overall[1])
+} 
+```
+
+
+Podemos ver la curva ROC para la regresión logística con las variables ya seleccionadas
+
+```{r, echo=F, warning=F, message=F}
+roc(predictor=p, response=df$EVOLUCI[-index], plot=TRUE, print.auc=TRUE, col="blue")
+```
+
+```{r, echo=F, warning=F, message=F, results='hide'}
+cm$table
+stats<-c(stats,mean(k))
+
+#SVM
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  if(i==1){
+  sv<-train(EVOLUCI~., data=df[index,], method="svmLinear",
+            trControl = trainControl("cv", number = 4),
+            tuneGrid = expand.grid(C = seq(0.1, 2, length = 10)),
+            preProcess = c("center","scale"), tuneLength=3)
+  }
+  p<-predict(sv, df[-index,])
+  k<-c(k,mean(p==df$EVOLUCI[-index]))
+  
+}
+tabsvmevosv<-cm$table
+
+stats<-c(stats,mean(k))
+
+##RANDOM FOREST
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  rf <- randomForest(EVOLUCI~., data=df[index,], ntree=700)
+  k<-c(k,1-rf$err.rate[700,1])
+}
+stats<-c(stats,mean(k))
+#NB
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  nb <- naiveBayes(EVOLUCI~., data=df[index,])
+  p<-predict(nb, df[-index,])
+  k<-c(k,mean(p==df$EVOLUCI[-index]))
+  
+}
+stats<-c(stats,mean(k))
+
+stats2<-stats
+```
+
+Y al tener tres categorías usaremos las mismas variables seleccionadas anteriormente con los cuatro clasificadores
+
+```{r, echo=F, message=F, results='hide', warning=F}
+
+df<-data2[,c("EVOLUCI",variables)]
+###TRES
+stats<-c()
+#MULTINOM
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  modelmult<-multinom(EVOLUCI~., data=df[index,])
+  p<-predict(modelmult,newdata = df[-index,])
+  cm<-confusionMatrix(p, df$EVOLUCI[-index])
+  k<-c(k,cm$overall[1])
+}
+tabmultinom<-cm$table
+stats<-c(stats,mean(k))
+#SVM
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  if(i==1){
+  sv<-train(EVOLUCI~., data=df[index,], method="svmLinear",
+            trControl = trainControl("cv", number = 4),
+            tuneGrid = expand.grid(C = seq(0.1, 2, length = 10)),
+            preProcess = c("center","scale"), tuneLength=3)
+  }
+  p<-predict(sv, df[-index,])
+  k<-c(k,mean(p==df$EVOLUCI[-index]))
+  
+}
+stats<-c(stats,mean(k))
+
+#RANDOM FOREST
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  rf <- randomForest(EVOLUCI~., data=df[index,], ntree=700)
+  k<-c(k,1-rf$err.rate[700,1])
+}
+stats<-c(stats,mean(k))
+
+#NB
+k<-c()
+for(i in 1:5){
+  index<-(1:b)[-unlist(flds[i])]
+  nb <- naiveBayes(EVOLUCI~., data=df[index,])
+  p<-predict(nb, df[-index,])
+  cm<-confusionMatrix(p, df$EVOLUCI[-index])
+  k<-c(k,mean(p==df$EVOLUCI[-index]))
+    
+}
+tabnbresdef<-cm$table
+
+stats<-c(stats,mean(k))
+
+
+stats3<-stats
+```
+
+# Resultados
+
+```{r, echo=F}
+m<-matrix(c(stats1[-c(1,2)],stats2[-c(1,2)],stats3[]), byrow = T, ncol = 4)
+colnames(m)<-c("LOG/MULT", "SVM", "BOSQUES", "NB")
+rownames(m)<-c("RESDEFIN", "EVOLUCION BIN", "EVOLUCION TRI")
+print(m)
+```
+
+Finalmente, habiendo analizado que en general los métodos se comportan de manera  similar, mostraremos una matríz de confusión para cada problema de clasificación con diferentes métodos: logístico para resultado definitivo, SVM para evolución con dos categorías y NB para evolución con tres categorías.
+
+```{r, echo=FALSE}
+tablogresdef
+tabsvmevosv
+tabnbresdef
+
+```
+
+Donde la matriz de confusión para resultado definitivo tiene una tasa de error 
+importante en ambas clases, pero la mayoría sigue cayendo en donde supondríamos.
+En la de tres clases de evolución se confunden mucho entre moderados y graves.
+En la de dos clases las matrices de confusión parecen comportarse bien.
+Para todos los métodos las matrices de confusión tienen un comportamiento similar.
+
+# Conclusión
+
+De acuerdo a los resultados anteriores, podemos observar que tenemos una mejor precisión de clasificación de los métodos usados para el modelo Evolución con dos categorías que para el modelo con 3 categorías, esto puede deberse al desequilibrio en la baja cantidad de casos graves en comparación con los no graves, por lo que el acierto de clasificación aumentaría. 
+
+Debido a los buenos resultados al menos para un modelo, entonces hemos encontrado bastante útil la aplicación de los diferentes métodos de clasificación supervisada para un problema con una muestra relativamente grande y con datos reales.
